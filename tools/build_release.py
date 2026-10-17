@@ -11,7 +11,7 @@ def main():
              'Client/client.py', 'Client/backup_engine.py', 'Client/FCS Backup.vbs',
              'Client/requirements-client.txt', 'Client/client_config.example.json',
              'Server/server.py', 'Server/backup_store.py',
-             'Server/requirements-win7.txt', 'Server/config.example.json',
+             'Server/requirements.txt', 'Server/config.example.json',
              'tools/benchmark_cache.py', 'tools/build_release.py']
     names.extend(path.relative_to(root).as_posix() for path in sorted((root / 'tests').glob('test_*.py')))
     output = root / 'dist' / 'FCS-Backup-v2.zip'

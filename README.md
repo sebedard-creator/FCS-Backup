@@ -11,6 +11,7 @@ Back up your files to a second Windows PC at another location, connected private
 ## Features
 
 - **Automated offsite backups** — daily scheduling and a Windows notification-area icon.
+- **Unattended server** — Windows service startup and process recovery through NSSM.
 - **Efficient transfers** — unchanged content is skipped; interrupted uploads can resume.
 - **Verified file updates** — SHA-256 checks and atomic replacement protect the previous copy until the new one is validated.
 - **48-hour recovery** — restore deleted files from server-side trash through the client.

@@ -5,11 +5,11 @@ L'identité FCS Backup est appliquée à l'interface, au lanceur, au dossier ser
 ## Résultats
 
 - **Python 3.11.9 : 55 tests réussis**, y compris Tkinter et le transport HTTP réel. Flask 3.1.3 du poste de développement ; Waitress 3.0.0 chargé depuis un répertoire temporaire isolé.
-- **Python 3.8.10 : 50 tests réussis, 5 tests d'interface ignorés** (Tkinter absent du runtime embarqué). Profil serveur figé de `requirements-win7.txt`, Requests 2.32.4 pour le client de test.
+- **Python 3.8.10 : 50 tests réussis, 5 tests d'interface ignorés** (Tkinter absent du runtime embarqué). Profil serveur figé de `Server/requirements.txt`, Requests 2.32.4 pour le client de test.
 - Syntaxe des fichiers applicatifs contrôlée pour Python 3.8.
 - Le runtime 3.8 et ses dépendances ont été placés uniquement dans un répertoire temporaire. Aucune installation Python ou dépendance de production n'a été remplacée.
 
-Les deux séries ont été exécutées sur le poste de développement Windows, pas sur le PC Windows 7. La compatibilité de l'interpréteur et des dépendances est vérifiée ; la validation sur le matériel et le système Windows 7 réels reste à faire lors du déploiement.
+Les deux séries ont été exécutées sur le poste de développement Windows, pas sur le PC de sauvegarde cible. La compatibilité de l'interpréteur et des dépendances est vérifiée ; la validation sur le matériel et le système du serveur réel reste à faire lors du déploiement.
 
 ## Scénarios couverts
 

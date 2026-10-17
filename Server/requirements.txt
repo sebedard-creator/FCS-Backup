@@ -1,4 +1,4 @@
-# Profil Python 3.8 / Windows 7. Ne pas mettre a jour ces versions implicitement.
+# Profil serveur compatible Python 3.8. Ne pas mettre a jour ces versions implicitement.
 Flask==3.0.3
 Werkzeug==3.0.6
 Jinja2==3.1.6

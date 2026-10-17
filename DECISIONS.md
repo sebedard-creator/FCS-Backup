@@ -1,6 +1,6 @@
 # FCS Backup — décisions validées — 17 octobre 2026
 
-Le serveur de sauvegarde utilise Windows 7 ; viser Python 3.8 et vérifier les dépendances. Les essais ne doivent pas toucher à la copie USB en cours.
+Le profil serveur conserve la compatibilité Python 3.8, avec des dépendances figées et vérifiées. Les essais ne doivent pas toucher à la copie USB en cours.
 
 1. Corbeille serveur : conserver les fichiers supprimés pendant **48 heures**, puis les purger. Permettre leur restauration.
 2. Comparer taille et date de modification ; calculer SHA-256 lorsque nécessaire, avec cache persistant. La première analyse constitue les empreintes ; les passages quotidiens ne relisent pas les contenus inchangés. Mesurer cette propriété.

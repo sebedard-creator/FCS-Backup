@@ -1,4 +1,4 @@
-"""API FCS Backup v2, Python 3.8 / Windows 7. Aucun disque ouvert a l'import."""
+"""API FCS Backup v2, compatible Python 3.8. Aucun disque ouvert a l'import."""
 
 import errno
 import hmac
