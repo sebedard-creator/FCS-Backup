@@ -2,9 +2,11 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -61,6 +63,66 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(entry['sha256'], sha(target.read_bytes()))
         self.assertEqual(set(self.store.manifest()), {'Photos/media.bin'})
 
+    @unittest.skipUnless(os.name == 'nt', 'API chemins longs Windows')
+    def test_windows_path_prefix_supports_drive_unc_and_existing_prefix(self):
+        cases = (
+            (r'D:\BACKUP\Music\..\MP3z', '\\\\?\\D:\\BACKUP\\MP3z'),
+            (r'\\backup-host\share\Music', '\\\\?\\UNC\\backup-host\\share\\Music'),
+            ('\\\\?\\D:\\BACKUP', '\\\\?\\D:\\BACKUP'),
+            ('\\\\?\\UNC\\backup-host\\share', '\\\\?\\UNC\\backup-host\\share'),
+        )
+        for path, expected in cases:
+            with self.subTest(path=path):
+                self.assertEqual(backup_store.filesystem_path(path), expected)
+
+    @unittest.skipUnless(os.name == 'nt', 'API chemins longs Windows')
+    def test_long_paths_reindex_transfer_trash_and_restore_with_legacy_limits(self):
+        relative = 'MP3z/' + '/'.join(['nested_folder'] * 24) + '/media.mp3'
+        target = Path('\\\\?\\' + str(self.root / relative))
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'original')
+        self.addCleanup(shutil.rmtree, '\\\\?\\' + str(self.root / 'MP3z'))
+        self.assertGreater(len(str(self.root / relative)), 260)
+        real_stat, real_scandir = os.stat, os.scandir
+
+        def require_long_path_api(path):
+            if isinstance(path, (str, os.PathLike)):
+                value = os.fspath(path)
+                if len(value) >= 260 and not value.startswith('\\\\?\\'):
+                    raise FileNotFoundError('Limite Windows classique : chemin non préfixé')
+
+        def stat(path, *args, **kwargs):
+            require_long_path_api(path)
+            return real_stat(path, *args, **kwargs)
+
+        def scandir(path):
+            require_long_path_api(path)
+            return real_scandir(path)
+
+        with patch.object(backup_store.os, 'stat', side_effect=stat), \
+                patch.object(backup_store.os, 'scandir', side_effect=scandir):
+            self.index()
+            self.assertEqual(self.store.manifest()[relative]['sha256'], sha(b'original'))
+            self.send(b'replacement', path=relative)
+            self.assertEqual(target.read_bytes(), b'replacement')
+            moved = self.store.move_to_trash(relative, sha(b'replacement'))
+            self.assertFalse(target.exists())
+            self.store = BackupStore(str(self.root), min_free_bytes=0)
+            self.assertEqual(self.store.restore(moved['trash_id'])['path'], relative)
+            self.assertEqual(target.read_bytes(), b'replacement')
+            self.assertEqual(set(self.store.manifest()), {relative})
+
+    @unittest.skipUnless(os.name == 'nt', 'API chemins longs Windows')
+    def test_long_backup_root_supports_sqlite_and_disk_checks(self):
+        branch = self.root / 'long_root'
+        deep_root = branch.joinpath(*(['nested_folder'] * 24))
+        self.addCleanup(shutil.rmtree, '\\\\?\\' + str(branch), True)
+        self.assertGreater(len(str(deep_root)), 260)
+        store = BackupStore(str(deep_root), min_free_bytes=0)
+        self.index(store)
+        self.assertEqual(store.manifest(), {})
+        self.assertGreater(store.disk_info()['total'], 0)
+
     def test_unchanged_reindex_does_not_read_file_contents(self):
         self.add_file()
         with patch.object(backup_store, 'file_hash', side_effect=AssertionError('Reread unchanged file')):
@@ -88,6 +150,159 @@ class StoreTests(unittest.TestCase):
             self.store.manifest()
         with self.store.connection() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM files').fetchone()[0], 1)
+
+    def test_failed_initial_reindex_reuses_completed_hashes_after_restart(self):
+        folder = self.root / 'Photos'
+        folder.mkdir()
+        (folder / 'one.bin').write_bytes(b'one')
+        (folder / 'two.bin').write_bytes(b'two')
+        real_hash = backup_store.file_hash
+        completed = []
+
+        def fail_after_first(path, cancel=None):
+            if completed:
+                raise OSError('Lecture interrompue')
+            result = real_hash(path, cancel)
+            completed.append(os.path.basename(path))
+            return result
+
+        with patch.object(backup_store, 'file_hash', side_effect=fail_after_first):
+            self.store.start_reindex()
+            self.store.index_thread.join(10)
+        self.assertIsNotNone(self.store.reindex_status()['error'])
+        with self.assertRaises(StoreError):
+            self.store.manifest()
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM files').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reindex_cache').fetchone()[0], 1)
+        self.store = BackupStore(str(self.root), min_free_bytes=0)
+        with patch.object(backup_store, 'file_hash', wraps=real_hash) as hashed:
+            self.index()
+        self.assertEqual(hashed.call_count, 1)
+        self.assertNotEqual(os.path.basename(hashed.call_args[0][0]), completed[0])
+        self.assertEqual(set(self.store.manifest()), {'Photos/one.bin', 'Photos/two.bin'})
+
+    def test_cancelled_reindex_keeps_last_completed_hash(self):
+        target = self.root / 'media.bin'
+        target.write_bytes(b'unchanged')
+        real_hash = backup_store.file_hash
+
+        def cancel_after_hash(path, cancel=None):
+            result = real_hash(path, cancel)
+            self.store.cancel_reindex()
+            return result
+
+        with patch.object(backup_store, 'file_hash', side_effect=cancel_after_hash):
+            self.store.start_reindex()
+            self.store.index_thread.join(10)
+        self.assertTrue(self.store.reindex_status()['cancelled'])
+        self.assertFalse(self.store.ready())
+        self.store = BackupStore(str(self.root), min_free_bytes=0)
+        with patch.object(backup_store, 'file_hash', side_effect=AssertionError('Empreinte déjà calculée')):
+            self.index()
+        self.assertEqual(self.store.manifest()['media.bin']['sha256'], sha(b'unchanged'))
+        self.assertEqual(self.store.reindex_status()['hashed'], 0)
+
+    def test_resumed_reindex_rehashes_changed_files_and_excludes_removed_files(self):
+        changed = self.root / 'changed.bin'
+        removed = self.root / 'removed.bin'
+        changed.write_bytes(b'AAAA')
+        removed.write_bytes(b'removed')
+        real_hash = backup_store.file_hash
+        completed = []
+
+        def cancel_after_two(path, cancel=None):
+            result = real_hash(path, cancel)
+            completed.append(path)
+            if len(completed) == 2:
+                self.store.cancel_reindex()
+            return result
+
+        with patch.object(backup_store, 'file_hash', side_effect=cancel_after_two):
+            self.store.start_reindex()
+            self.store.index_thread.join(10)
+        self.assertTrue(self.store.reindex_status()['cancelled'])
+        before = changed.stat()
+        changed.write_bytes(b'BBBB')
+        os.utime(changed, ns=(before.st_mtime_ns + 1000000000,) * 2)
+        removed.unlink()
+        (self.root / 'new.bin').write_bytes(b'new')
+        self.store = BackupStore(str(self.root), min_free_bytes=0)
+        with patch.object(backup_store, 'file_hash', wraps=real_hash) as hashed:
+            self.index()
+        self.assertEqual(hashed.call_count, 2)
+        manifest = self.store.manifest()
+        self.assertEqual(set(manifest), {'changed.bin', 'new.bin'})
+        self.assertEqual(manifest['changed.bin']['sha256'], sha(b'BBBB'))
+        with self.store.connection() as db:
+            self.assertIsNone(db.execute('SELECT * FROM reindex_cache WHERE path=?',
+                                         ('removed.bin',)).fetchone())
+
+    def test_inventory_publication_is_atomic_and_cache_survives_publication_error(self):
+        self.add_file()
+        (self.root / 'new.bin').write_bytes(b'new')
+        with self.store.connection() as db:
+            db.execute('''CREATE TRIGGER fail_publish BEFORE INSERT ON files
+                BEGIN SELECT RAISE(ABORT, 'Publication interrompue'); END''')
+        self.store.start_reindex()
+        self.store.index_thread.join(10)
+        self.assertIsNotNone(self.store.reindex_status()['error'])
+        self.assertFalse(self.store.ready())
+        with self.store.connection() as db:
+            self.assertEqual([row['path'] for row in db.execute('SELECT path FROM files')],
+                             ['Photos/media.bin'])
+            db.execute('DROP TRIGGER fail_publish')
+        self.store = BackupStore(str(self.root), min_free_bytes=0)
+        with patch.object(backup_store, 'file_hash', side_effect=AssertionError('Empreinte déjà calculée')):
+            self.index()
+        self.assertEqual(set(self.store.manifest()), {'Photos/media.bin', 'new.bin'})
+
+    def test_reindex_checkpoints_survive_abrupt_process_termination(self):
+        folder = self.root / 'Photos'
+        folder.mkdir()
+        for index in range(101):
+            (folder / '{}.bin'.format(index)).write_bytes(b'content')
+        marker = self.root.parent / 'checkpoint-ready'
+        script = '''import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import backup_store
+backup_store.time.monotonic = lambda: 0
+store = backup_store.BackupStore(sys.argv[2], min_free_bytes=0)
+real_hash = backup_store.file_hash
+count = 0
+def hash_until_checkpoint(path, cancel=None):
+    global count
+    count += 1
+    if count == 101:
+        Path(sys.argv[3]).write_text('ready')
+        time.sleep(60)
+    return real_hash(path, cancel)
+backup_store.file_hash = hash_until_checkpoint
+store.start_reindex()
+store.index_thread.join()
+'''
+        process = subprocess.Popen([sys.executable, '-B', '-c', script,
+                                    str(SERVER_DIR), str(self.root), str(marker)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 10
+            while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.exists(), 'Le processus n’a pas atteint son checkpoint')
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+        self.store = BackupStore(str(self.root), min_free_bytes=0)
+        self.assertFalse(self.store.ready())
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reindex_cache').fetchone()[0], 100)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM files').fetchone()[0], 0)
+        with patch.object(backup_store, 'file_hash', wraps=backup_store.file_hash) as hashed:
+            self.index()
+        self.assertEqual(hashed.call_count, 1)
+        self.assertEqual(len(self.store.manifest()), 101)
 
     def test_reindex_excludes_mutations_and_can_be_cancelled(self):
         self.add_file()
@@ -302,7 +517,7 @@ class StoreTests(unittest.TestCase):
         real_is_link = backup_store.is_link
 
         def link(path):
-            return os.fspath(path) == str(directory) or real_is_link(path)
+            return os.path.samefile(path, directory) or real_is_link(path)
 
         with patch.object(backup_store, 'is_link', side_effect=link):
             with self.assertRaises(StoreError):

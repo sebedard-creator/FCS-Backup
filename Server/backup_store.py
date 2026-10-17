@@ -26,6 +26,16 @@ class StoreError(Exception):
         self.status = status
 
 
+def filesystem_path(path):
+    """Utilise l'API Windows des chemins longs sans modifier les noms stockés."""
+    absolute = os.path.abspath(path)
+    if os.name != 'nt' or absolute.startswith('\\\\?\\'):
+        return absolute
+    if absolute.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + absolute[2:]
+    return '\\\\?\\' + absolute
+
+
 def file_hash(path, cancel=None):
     before = os.stat(path)
     digest = hashlib.sha256()
@@ -50,7 +60,7 @@ def is_link(path):
 
 class BackupStore:
     def __init__(self, folder, min_free_bytes=64 * 1024 * 1024):
-        self.configured_root = os.path.abspath(folder)
+        self.configured_root = filesystem_path(folder)
         self.root = os.path.realpath(self.configured_root)
         os.makedirs(self.root, exist_ok=True)
         self.internal = os.path.join(self.root, '.fcs2')
@@ -85,6 +95,10 @@ class BackupStore:
                     mtime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,
                     source_mtime_ns INTEGER);
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+                CREATE TABLE IF NOT EXISTS reindex_cache (
+                    path TEXT PRIMARY KEY, size INTEGER NOT NULL,
+                    mtime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,
+                    source_mtime_ns INTEGER, scan_id TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS transfers (
                     id TEXT PRIMARY KEY, path TEXT NOT NULL, size INTEGER NOT NULL,
                     sha256 TEXT NOT NULL, source_mtime_ns INTEGER NOT NULL,
@@ -241,47 +255,68 @@ class BackupStore:
             self.assert_root()
             with self.connection() as db:
                 previous = {row['path']: dict(row) for row in db.execute('SELECT * FROM files')}
+                scan_id = uuid.uuid4().hex
+                pending = 0
+                last_commit = time.monotonic()
+                # Nettoyer la table de travail des versions antérieures.
                 db.execute('DROP TABLE IF EXISTS next_files')
-                db.execute('CREATE TABLE next_files AS SELECT * FROM files WHERE 0')
 
                 def walk_error(error):
                     raise error
 
-                for root, dirs, filenames in os.walk(self.root, onerror=walk_error):
-                    if root == self.root:
-                        dirs[:] = [name for name in dirs if name.casefold() not in RESERVED]
-                    for name in dirs:
-                        relative_dir = os.path.relpath(os.path.join(root, name), self.root).replace('\\', '/')
-                        self.safe_path(relative_dir)
-                    for name in filenames:
-                        relative = os.path.relpath(os.path.join(root, name), self.root).replace('\\', '/')
-                        if root == self.root and (name.casefold() in RESERVED or
-                                                  name.casefold().startswith('.manifest_cache.')):
-                            continue
+                try:
+                    for root, dirs, filenames in os.walk(self.root, onerror=walk_error):
                         if self.index_cancel.is_set():
                             raise StoreError('Analyse arrêtée', 409)
-                        path = self.safe_path(relative)
-                        info = os.stat(path)
-                        old = previous.get(relative)
-                        if old and (old['size'], old['mtime_ns']) == (info.st_size, info.st_mtime_ns):
-                            digest = old['sha256']
-                            source_mtime = old['source_mtime_ns']
-                        else:
-                            digest, info = file_hash(path, self.index_cancel)
-                            source_mtime = None
+                        if root == self.root:
+                            dirs[:] = [name for name in dirs if name.casefold() not in RESERVED]
+                        for name in dirs:
+                            relative_dir = os.path.relpath(os.path.join(root, name), self.root).replace('\\', '/')
+                            self.safe_path(relative_dir)
+                        for name in filenames:
+                            relative = os.path.relpath(os.path.join(root, name), self.root).replace('\\', '/')
+                            if root == self.root and (name.casefold() in RESERVED or
+                                                      name.casefold().startswith('.manifest_cache.')):
+                                continue
+                            if self.index_cancel.is_set():
+                                raise StoreError('Analyse arrêtée', 409)
+                            path = self.safe_path(relative)
+                            info = os.stat(path)
+                            old = previous.get(relative)
+                            metadata = (info.st_size, info.st_mtime_ns)
+                            if not old or (old['size'], old['mtime_ns']) != metadata:
+                                old = db.execute('SELECT * FROM reindex_cache WHERE path=?',
+                                                 (relative,)).fetchone()
+                            if old and (old['size'], old['mtime_ns']) == metadata:
+                                digest = old['sha256']
+                                source_mtime = old['source_mtime_ns']
+                            else:
+                                digest, info = file_hash(path, self.index_cancel)
+                                source_mtime = None
+                                with self.condition:
+                                    self.index_status['hashed'] += 1
+                            db.execute('INSERT OR REPLACE INTO reindex_cache VALUES (?,?,?,?,?,?)',
+                                       (relative, info.st_size, info.st_mtime_ns, digest, source_mtime, scan_id))
+                            pending += 1
+                            if pending >= 100 or time.monotonic() - last_commit >= 1:
+                                db.commit()
+                                pending = 0
+                                last_commit = time.monotonic()
                             with self.condition:
-                                self.index_status['hashed'] += 1
-                        db.execute('INSERT INTO next_files VALUES (?,?,?,?,?)',
-                                   (relative, info.st_size, info.st_mtime_ns, digest, source_mtime))
-                        with self.condition:
-                            self.index_status['count'] += 1
-                            self.index_status['path'] = relative
+                                self.index_status['count'] += 1
+                                self.index_status['path'] = relative
+                finally:
+                    # Conserver les empreintes terminées même après erreur ou annulation.
+                    # L'inventaire publié reste bloqué jusqu'à la réussite complète.
+                    db.commit()
                 self.assert_root()
                 if self.index_cancel.is_set():
                     raise StoreError('Analyse arrêtée', 409)
                 db.execute('DELETE FROM files')
-                db.execute('INSERT INTO files SELECT * FROM next_files')
-                db.execute('DROP TABLE next_files')
+                db.execute('''INSERT INTO files
+                    SELECT path,size,mtime_ns,sha256,source_mtime_ns
+                    FROM reindex_cache WHERE scan_id=?''', (scan_id,))
+                db.execute('DELETE FROM reindex_cache WHERE scan_id<>?', (scan_id,))
                 db.execute("INSERT OR REPLACE INTO meta VALUES ('ready','1')")
         except Exception as error:
             with self.condition:

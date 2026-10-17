@@ -4,8 +4,8 @@ L'identité FCS Backup est appliquée à l'interface, au lanceur, au dossier ser
 
 ## Résultats
 
-- **Python 3.11.9 : 55 tests réussis**, y compris Tkinter et le transport HTTP réel. Flask 3.1.3 du poste de développement ; Waitress 3.0.0 chargé depuis un répertoire temporaire isolé.
-- **Python 3.8.10 : 50 tests réussis, 5 tests d'interface ignorés** (Tkinter absent du runtime embarqué). Profil serveur figé de `Server/requirements.txt`, Requests 2.32.4 pour le client de test.
+- **Python 3.11.9 : 63 tests réussis**, y compris Tkinter et le transport HTTP réel. Flask 3.1.3 du poste de développement ; Waitress 3.0.0 chargé depuis un répertoire temporaire isolé.
+- **Python 3.8.10 : 58 tests réussis, 5 tests d'interface ignorés** (Tkinter absent du runtime embarqué). Profil serveur figé de `Server/requirements.txt`, Requests 2.32.4 pour le client de test.
 - Syntaxe des fichiers applicatifs contrôlée pour Python 3.8.
 - Le runtime 3.8 et ses dépendances ont été placés uniquement dans un répertoire temporaire. Aucune installation Python ou dépendance de production n'a été remplacée.
 
@@ -58,3 +58,20 @@ Les tests ont utilisé des dossiers temporaires, des sessions Flask simulées ou
 - Imports des tests, benchmark, guide d'installation, exclusions Git et archive de mise à jour adaptés à cette structure. Les configurations et journaux déplacés sont identiques octet pour octet aux originaux.
 - **55 tests réussis sous Python 3.11.9** ; **50 réussis et 5 ignorés sous Python 3.8.10** (Tkinter absent). Ruff et syntaxe Python 3.8 vérifiés. Le benchmark confirme toujours zéro lecture de contenu et zéro transfert au second passage.
 - Le dossier parent peut être renommé : les chemins applicatifs sont résolus depuis les fichiers. Le lanceur du client reste dans son dossier, à côté de `client.py`.
+
+## Correction des chemins longs du 17 octobre 2026
+
+- Une erreur de réanalyse a signalé un chemin de 261 caractères. Le serveur utilise désormais les chemins Windows étendus pour ses accès disque, avec prise en charge des lecteurs locaux et des partages UNC. La configuration, les noms des médias et les chemins relatifs de l'inventaire sont conservés.
+- Un test reproduit l'échec de l'ancien code en simulant la limite classique de Windows, puis vérifie la réanalyse, le remplacement, la corbeille et la restauration après redémarrage sur un chemin long. Deux autres tests couvrent les préfixes locaux/UNC et un dossier racine long contenant SQLite.
+- Les protections contre les liens, les jonctions, les traversées et les accès aux fichiers internes restent testées. L'intégralité des suites Python 3.11 et Python 3.8 a été repassée avec les résultats indiqués en tête du rapport.
+- Seul `Server/backup_store.py` change dans le code applicatif ; aucun changement de configuration ni de dépendances n'est nécessaire. Les essais utilisent des répertoires temporaires ; la validation du correctif sur le serveur réel reste à effectuer.
+
+Référence : [Microsoft — Maximum Path Length Limitation](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation).
+
+## Reprise de la réanalyse du 17 octobre 2026
+
+- Les empreintes vérifiées sont conservées dans une table SQLite distincte de l'inventaire publié. Elles sont validées par lots de 100 fichiers ou après une seconde, avec contrôle entre les fichiers. Le dernier lot est aussi enregistré après une erreur de lecture ou une annulation normale. Un arrêt brutal peut faire perdre le dernier lot non validé et le calcul du fichier en cours.
+- Une relance parcourt à nouveau les dossiers et vérifie taille et date avant de réutiliser une empreinte enregistrée. Les contenus inchangés ne sont pas relus. Les fichiers nouveaux ou modifiés sont calculés ; les fichiers disparus ne sont pas réintroduits. Comme les autres caches, cette reprise suppose qu'un changement de contenu modifie la taille ou la date.
+- L'inventaire reste indisponible après une analyse incomplète. Son remplacement et sa validation sont atomiques après réussite complète. L'ajout de la table de cache est automatique ; les configurations, les médias et les données de corbeille sont conservés.
+- Cinq régressions supplémentaires vérifient la reprise après erreur et redémarrage, après annulation, après modification/suppression de fichiers, après échec de publication SQLite, et après arrêt brutal d'un processus séparé. Le test de coupure retrouve 100 empreintes validées et ne recalcule que le fichier restant.
+- Les empreintes annulées par une tentative exécutée avec l'ancienne version ne peuvent pas être récupérées. Le correctif nécessite toujours de remplacer uniquement `Server/backup_store.py` sur le serveur réel.

@@ -84,6 +84,8 @@ python Client/client.py
 
 Once any initial file copy is complete, select **Réanalyser la sauvegarde** and wait for **Terminé**, then select **Sauvegarder**. Reindex after any manual change to the backup drive. Identical files already on the server are adopted without retransmission.
 
+Reindexing saves verified fingerprints progressively. After an error, cancellation, or service restart, rerun it: unchanged files with saved fingerprints need only metadata checks. A file interrupted during hashing must be read again. The inventory becomes available only after a complete successful pass.
+
 ## Backup behavior
 
 > **This is a mirror with temporary recovery.** Removing files from an accessible source folder moves their backup copies to trash. After 48 hours, the running server can permanently purge them.
@@ -92,6 +94,7 @@ Once any initial file copy is complete, select **Réanalyser la sauvegarde** and
 - Restoration returns files to the **server**. Copy them back to their source before the next backup if you want to keep them.
 - Keep the client running for scheduled backups. Missed runs are not caught up, and failed runs are not automatically retried.
 - Keep the HTTP service on the private Tailscale network. Preserve the server's `.fcs2` directory: it holds the inventory, recovery records, and resumable uploads.
+- The server handles long Windows paths internally for indexing, transfers, and trash operations, preserving the original filenames and folder structure.
 
 ## Validation
 
@@ -102,7 +105,7 @@ python -B -m unittest discover -s tests -v
 python -B tools/benchmark_cache.py
 ```
 
-The latest validation passed **55 tests on Python 3.11** and **50 on Python 3.8**; five interface tests were skipped on the Python 3.8 runtime without Tkinter. Tests use temporary folders and local test services.
+The latest validation passed **63 tests on Python 3.11** and **58 on Python 3.8**; five interface tests were skipped on the Python 3.8 runtime without Tkinter. Tests use temporary folders and local test services.
 
 See the [validation report](TEST_REPORT.md) and [design decisions](DECISIONS.md) for details.
 
