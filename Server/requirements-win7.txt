@@ -1,0 +1,12 @@
+# Profil Python 3.8 / Windows 7. Ne pas mettre a jour ces versions implicitement.
+Flask==3.0.3
+Werkzeug==3.0.6
+Jinja2==3.1.6
+MarkupSafe==2.1.5
+itsdangerous==2.2.0
+click==8.1.8
+blinker==1.8.2
+waitress==3.0.0
+importlib-metadata==8.5.0
+zipp==3.20.2
+colorama==0.4.6

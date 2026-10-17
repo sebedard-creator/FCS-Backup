@@ -1,0 +1,43 @@
+# Local configuration and credentials
+/Client/client_config.json*
+/Server/config.json*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+
+# Logs and runtime data
+*.log
+*.log.*
+*.sqlite3
+*.sqlite3-*
+*.sqlite
+*.sqlite-*
+.fcs2/
+.fcs2_client.sqlite3*
+.partial_temp/
+.manifest_cache.*
+manifest.json
+
+# Python environments and generated files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Generated release archives
+/dist/
+
+# Windows metadata
+Thumbs.db
+Desktop.ini

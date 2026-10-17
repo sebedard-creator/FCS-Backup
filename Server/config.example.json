@@ -1,0 +1,6 @@
+{
+    "backup_folder": "D:\\BACKUP",
+    "secret_token": "remplacer-par-le-meme-jeton-que-le-client",
+    "port": 5001,
+    "min_free_bytes": 67108864
+}

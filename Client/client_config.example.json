@@ -1,0 +1,10 @@
+{
+    "server_ip": "100.x.x.x",
+    "server_port": 5001,
+    "secret_token": "remplacer-par-le-meme-jeton-que-le-serveur",
+    "folders": [],
+    "backup_time": "02:00",
+    "last_backup": "jamais",
+    "parallel_transfers": 2,
+    "folder_labels": {}
+}
